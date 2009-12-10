@@ -209,6 +209,26 @@ and wavelength l determine the intensity after DIC method."
 	     (+ (* x1 x1) (* y1 y1))) .001)
     (setf (aref erika i j) 0d0)))
 
+;; 4stripes
+;; (img-do (erika)
+;;   (setf (aref erika i j) (cond 
+;; 			   ((< j 32)  (* .2 x))
+;; 			   ((< j 64)  (+ .2 (* -.2 x)))
+;; 			   ((< j (+ 64 32))  (* .1 x))
+;; 			   ((< j 128)  (+ .1 (* -.1 x)))
+;; 			   (t 0d0))))
+
+;; conststripes
+;; (img-do (erika)
+;;   (setf (aref erika i j) 
+;; 	(cond 
+;; 	  ((< j 32)  .2d0)
+;; 	  ((< j 64)  .15d0)
+;; 	  ((< j (+ 64 32))  .1d0)
+;; 	  ((< j 128)  .05d0)
+;; 	  (t 0d0))))
+
+
 (defparameter erika2 (make-array '(256 256) :element-type 'double-float)
   "This is what we display on the MMA.")
 

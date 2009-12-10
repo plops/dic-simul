@@ -1,5 +1,7 @@
-;; der compiler meckert wenn ich nicht alle variablen nutze. hoffentlich schmeisst er sie auch raus
-(defmacro img-do ((img &key (centered nil) (centered-x nil) (centered-y nil)) &body body)
+(defmacro img-do ((img &key (centered nil) (centered-x nil)
+		       (centered-y nil)) &body body)
+  "Iterate over a 2d image. Provides the scaled iteration variables as
+x and y. Depending on CENTERED either to 0..(1-delta) or -.5..(.5-delta)."
   `(let* ((w (array-dimension ,img 0))
 	  (h (array-dimension ,img 1))
 	  (w/2 (* w .5d0))
@@ -23,6 +25,7 @@
 	    ,@body))))))
 
 (defun extrema (img)
+  "Return maximum and minimum value of an image."
   (declare (type (simple-array double-float (* *)) img))
   (let* ((mi (aref img 0 0))
 	 (ma mi))
@@ -34,16 +37,16 @@
     (values mi ma)))
 
 (defun normalize (img)
+  "Return image with values scaled to fit between 0 and 1."
   (declare (type (simple-array double-float (* *)) img))
   (multiple-value-bind (mini maxi)
       (extrema img)
     (declare (double-float mini maxi))
     (let ((s (/ (- maxi mini))))
       (img-do (img)
-	(setf (aref img i j)
-	      (* s (- (aref img i j) mini))))))
+	      (setf (aref img i j)
+		    (* s (- (aref img i j) mini))))))
   img)
-
 
 (defun write-pgm (filename a &key (maxi 1d0 maxi-p) (mini 0d0 mini-p))
   "Write scalar real data from A into FILENAME as raw Portable Gray
@@ -70,8 +73,10 @@ chosen."
 		   (setf (aref buf (+ i (* w j)))
 			 (clamp (floor (* scale (- (aref a i j) mini)))))))))
       (if (and maxi-p mini-p)
-	  (copy-to-buf buf a mini maxi) ;; use scaling as provided by user
-	  (multiple-value-bind (mini-b maxi-b) ;; find correct scaling from data
+	  (copy-to-buf buf a mini maxi) ;; use scaling as provided by
+					;; user
+	  (multiple-value-bind (mini-b maxi-b) ;; find correct scaling
+					       ;; from data
 	      (extrema a)
 	    (declare (double-float maxi-b mini-b))
 	    (setf mini mini-b
@@ -87,82 +92,89 @@ chosen."
   (values maxi mini))
 
 
-(defparameter lut (make-array '(256 256) :element-type 'double-float))
+(defparameter lut
+  (make-array '(256 256) :element-type 'double-float)
+  "Storage for the lookup table of eta values.")
 
-(img-do (lut)
-  (setf (aref lut i j) (+ x y)))
-
-(let* ((ll 16d0)
-       (l .480))
-  (labels ((uce->d (x) ; convert voltage U_CE=x V into mirror deflection d/um
-	     (let* ((x3 (* x x x))
-		    (a 0.0113608)
-		    (d 4.31718))
-	       (* 1/1000 (+ (* a x3) d)))))
-    (let* ((imagefactor .75)
-	   (maxvoltage 30)
-	   (max-deflection (uce->d (* imagefactor maxvoltage)))
-	   (max-piston-intensity (- 1 (cos (* 2 2 pi (/ l)
-					      max-deflection)))))
-        (format t "~s~%" (list "max-defl" max-deflection))  
-      (img-do (lut)
-	(let* ((d1 (uce->d (* x imagefactor maxvoltage)))
-	       (d2 (uce->d (* y imagefactor maxvoltage)))
-	       (delta-d (- d1 d2))
-	       (arg (* 2 pi delta-d (/ l)))
-	       (torsion-mirror-intensity (- 1 (if (= arg 0d0)
-					   1d0
-					   (/ (sin arg) arg)))))
-	(setf (aref lut i j) (/ torsion-mirror-intensity max-piston-intensity)))))
-    
-    ))
+(defun calc-lut ()
+  (let* ((ll 16d0)
+	 (l .480))
+    (labels ((uce->d (x) ; convert voltage U_CE=x V into mirror
+			 ; deflection d/um
+	       (let* ((x3 (* x x x))
+		      (a 0.0113608)
+		      (d 4.31718))
+		 (* 1/1000 (+ (* a x3) d)))))
+      (let* ((imagefactor .75)
+	     (maxvoltage 30)
+	     (max-deflection (uce->d (* imagefactor maxvoltage)))
+	     (max-piston-intensity (- 1 (cos (* 2 2 pi (/ l)
+						max-deflection)))))
+	;; max-deflection must be 133 nm
+	;; (format t "~s~%" (list "max-defl" max-deflection))  
+	(img-do (lut)
+		(let* ((d1 (uce->d (* x imagefactor maxvoltage)))
+		       (d2 (uce->d (* y imagefactor maxvoltage)))
+		       (delta-d (- d1 d2))
+		       (arg (* 2 pi delta-d (/ l)))
+		       (torsion-mirror-intensity (- 1 (if (= arg 0d0)
+							  1d0
+							  (/ (sin arg) arg)))))
+		  (setf (aref lut i j) (/ torsion-mirror-intensity
+					  max-piston-intensity))))))))
   
 
-(write-pgm "/dev/shm/lut.pgm" lut)
+(calc-lut)
+(write-pgm "/dev/shm/lut.pgm" lut) ;; output lut for reference
 
 
 (defun read-without-comment (s)
   "Read the next data from stream S, skipping any comments."
-  (read s)
-;; (if (eq (peek-char nil s) #\#) ;; FIXME that should work
-;;       (progn
-;;         (read s)
-;;         (read-without-comment s))
-;;       (read s))
-)
+  (if (eq (peek-char nil s) #\#)
+      (progn
+	(read s)
+        (read-without-comment s))
+      (read s)))
 
 (defun read-pgm (filename)
   "Read binary PGM file."
-  (with-open-file (s filename :external-format :ascii) 
+  (with-open-file (s filename :external-format :ascii) ;; open to read
+						       ;; ascii header
     (when (not (equal (symbol-name (read s)) "P5"))
       (error "not a binary PGM file"))
     (let* ((width (read-without-comment s))
 	   (height (read-without-comment s))
-	   (grays (read-without-comment s))
+	   (grays (read-without-comment s)) ; not used
 	   (pos (file-position s))
-	   (data (make-array (* width height) :element-type '(unsigned-byte 8)))
-	   (bild (make-array (list width height) :element-type 'double-float)))
+	   (data (make-array (* width height)
+			     :element-type '(unsigned-byte 8)))
+	   (bild (make-array (list width height)
+			     :element-type 'double-float)))
+      ;; reopen to read the image data
       (with-open-file (s filename :element-type '(unsigned-byte 8))
 	(file-position s pos)
 	(read-sequence data s))
       (img-do (bild)
-	(setf (aref bild i j)  (coerce (aref data (+ i (* w j))) 'double-float)))
+	(setf (aref bild i j)
+	      (coerce (aref data (+ i (* w j))) 'double-float)))
       bild)))
 
 
-(defparameter erika (normalize (read-pgm "erika.pgm")))
+(defparameter erika (normalize (read-pgm "erika.pgm"))
+  "Image that we want to generate on the camera")
 
-; i want some really black region
+; I need some black region for focussing
 (img-do (erika)
   (when (< (let ((x1 (- x .57))
 		 (y1 (- y .35)))
 	     (+ (* x1 x1) (* y1 y1))) .001)
     (setf (aref erika i j) 0d0)))
 
-(defparameter erika2 (make-array '(256 256) :element-type 'double-float))
+(defparameter erika2 (make-array '(256 256) :element-type 'double-float)
+  "This is what we display on the MMA.")
 
 (defun get-lut (intensity dic-neighbor-val)
-  "scan through the lookup table and look for the value that the
+  "Scan through the lookup table and look for the value that the
 actual pixel should have so that the intensity goal is achieved
 together with its predecessor in x direction."
   (labels ((merit (lut-pos)
@@ -171,16 +183,17 @@ together with its predecessor in x direction."
 	       (* diff diff))))
     (let* ((lut-pos 0)
 	   (mi (merit lut-pos))) 
-      (dotimes (i 256) ;; FIXME: slowest possible algorithm :-(
+      (dotimes (i 256) ;; this is really the slowest possible
+		       ;; algorithm
 	(let ((v (merit i)))
 	  (when (< v mi)
 	    (setf lut-pos i
 		  mi v))))
       lut-pos)))
 
-
-;; set leftmost pixel to zero angle then update neighbors on the right
-;; (along x) according to the lookup table
+;; This is the actual calculation of the values that have to be
+;; displayed on the MMA: set leftmost pixel to zero angle then update
+;; neighbors on the right (along x) according to the lookup table
 (time 
  (img-do (erika2)
    (if (eq i 0)
@@ -190,8 +203,11 @@ together with its predecessor in x direction."
 			      (coerce (floor (aref erika2 (1- i) j)) 'fixnum))
 		     'double-float)))))
 
-(write-pgm "/dev/shm/erika.pgm" erika)
-(write-pgm "/dev/shm/erika2.pgm" erika2)
+(write-pgm "/dev/shm/erika.pgm" erika)   ;; image that should be on the camera
+(write-pgm "/dev/shm/erika2.pgm" erika2) ;; image that is displayed on the MMA
+
+;; Now only some boring conversion routines. The MMA software expects
+;; 24-bit color BGR BMP and reads the blue data.
 
 (defparameter bmp-header
   #(#x42 #x4d #x36 #x00 #x03 #x00 #x00 #x00  #x00 #x00 #x36 #x00 #x00 #x00 #x28 #x00
@@ -205,8 +221,10 @@ together with its predecessor in x direction."
   m)
 
 
-(defparameter erika3 (make-array (* 256 256 3) :element-type '(unsigned-byte 8)))
+(defparameter erika3 (make-array (* 256 256 3) :element-type '(unsigned-byte 8))
+  "Contains data for the color BMP.")
 
+;; copy contents of erika2.pgm into erika3.pgm
 (img-do (erika2)
 	(dotimes (k 3)
 	  (setf (aref erika3 (+ k (* 3 (+ i (* w j)))))
@@ -222,76 +240,3 @@ together with its predecessor in x direction."
     nil))
 
 (write-bmp24 "/dev/shm/erika3.bmp" erika3)
-
-(defparameter checkerboard (make-array '(256 256) :element-type 'double-float))
-
-
-;(defmacro xor (v1 v2)
-;`(not (eq (not ,v1) (not ,v2)))) 
-
-;; this will generate exactly the same file as Schachbrett.bmp
-(progn
-  (dotimes (i (/ 256 8))
-    (dotimes (j (/ 256 8))
-      (dotimes (ii 8)
-	(dotimes (jj 8)
-	  (setf (aref checkerboard (+ (* 8 i) ii) (+ (* 8 j) jj))
-		(if (= 0 (mod (+ i j) 2))
-		    255d0
-		    0d0))))))
-  
-  (defparameter cb3 (make-array (* 256 256 3) :element-type '(unsigned-byte 8)))
-  
-  (img-do (checkerboard)
-    (dotimes (k 3)
-      (setf (aref cb3 (+ k (* 3 (+ i (* w j)))))
-	    (coerce (floor (aref checkerboard i j)) '(unsigned-byte 8)))))
-  
-  (write-bmp24 "/dev/shm/checkerboard3.bmp" cb3))
-
-
-(defun apply-lut (image)
-  (let ((image2 (make-array '(256 256) :element-type 'double-float)))
-    (img-do (image2)
-      (if (eq i 0)
-	  (setf (aref image2 i j) 0d0)
-	  (setf (aref image2 i j) 
-		(coerce (get-lut (aref image i j)
-				 (coerce (floor (aref image2 (1- i) j)) 'fixnum))
-			'double-float)))
-      nil)
-    image2))
- 
-
-(defun gray2d->bgr1d (image)
-  (let ((out (make-array (* 256 256 3) :element-type '(unsigned-byte 8))))
-    (img-do (image)
-      (dotimes (k 3)
-	(setf (aref out (+ k (* 3 (+ i (* w j)))))
-	      (coerce (floor (aref image i j)) '(unsigned-byte 8)))))))
-
-(progn
-  (let ((size 32) ;; must be power of two
-	)
-    (dotimes (i (/ 256 size))
-    (dotimes (j (/ 256 size))
-      (dotimes (ii size)
-	(dotimes (jj size)
-	  (setf (aref checkerboard (+ (* size i) ii) (+ (* size j) jj))
-		(if (= 0 (mod (+ i j) 2))
-		    (* 32d0 ii)
-		    0d0)))))))
-  
-  
-  (defparameter cb3 (make-array (* 256 256 3) :element-type '(unsigned-byte 8)))
-  
-  ;; (img-do (checkerboard)
-;;     (dotimes (k 3)
-;;       (setf (aref cb3 (+ k (* 3 (+ i (* w j)))))
-;; 	    (coerce (floor (aref checkerboard i j)) '(unsigned-byte 8)))))
-  
-  ;;  (write-bmp24 "/dev/shm/gray-checkerboard.bmp" cb3)
-  (write-pgm "/dev/shm/gray-checkerboard-with-lut.pgm" (apply-lut checkerboard))
-  (write-bmp24 "/dev/shm/gray-checkerboard-with-lut.bmp" (gray2d->bgr1d (apply-lut checkerboard)))
-  )
-
